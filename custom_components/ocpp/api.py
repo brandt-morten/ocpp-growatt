@@ -1,10 +1,9 @@
-"""Representation of a OCPP Entities."""
+"""Representation of OCPP Entities."""
 
 from __future__ import annotations
 
 import logging
 import ssl
-
 from functools import partial
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import STATE_OK
@@ -51,9 +50,6 @@ from .enums import (
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 logging.getLogger(DOMAIN).setLevel(logging.INFO)
-# Uncomment these when Debugging
-# logging.getLogger("asyncio").setLevel(logging.DEBUG)
-# logging.getLogger("websockets").setLevel(logging.DEBUG)
 
 
 class CentralSystem:
@@ -99,7 +95,6 @@ class CentralSystem:
 
         if self.entry.data.get(CONF_SSL, DEFAULT_SSL):
             self.ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-            # see https://community.home-assistant.io/t/certificate-authority-and-self-signed-certificate-for-ssl-tls/196970
             localhost_certfile = self.entry.data.get(
                 CONF_SSL_CERTFILE_PATH, DEFAULT_SSL_CERTFILE_PATH
             )
@@ -122,7 +117,7 @@ class CentralSystem:
             self.port,
             select_subprotocol=self.select_subprotocol,
             subprotocols=self.subprotocols,
-            ping_interval=None,  # ping interval is not used here, because we send pings mamually in ChargePoint.monitor_connection()
+            ping_interval=None,  # ping interval is not used here, because we send pings manually in ChargePoint.monitor_connection()
             ping_timeout=None,
             close_timeout=self.settings.websocket_close_timeout,
             ssl=self.ssl_context,
@@ -135,18 +130,14 @@ class CentralSystem:
     ) -> Subprotocol | None:
         """Override default subprotocol selection."""
 
-        # Server offers at least one subprotocol but client doesn't offer any.
-        # Default to None
         if not subprotocols:
             return None
 
-        # Server and client both offer subprotocols. Look for a shared one.
         proposed_subprotocols = set(subprotocols)
         for subprotocol in proposed_subprotocols:
             if subprotocol in self.subprotocols:
                 return subprotocol
 
-        # No common subprotocol was found.
         raise NegotiationError(
             "invalid subprotocol; expected one of " + ", ".join(self.subprotocols)
         )
@@ -223,29 +214,55 @@ class CentralSystem:
             return self.charge_points[cp_id].supported_features
         return 0
 
-    async def set_max_charge_rate_amps(self, cp_id: str, value: float):
+    async def set_max_charge_rate_amps(self, cp_id: str, value):
         """Set the maximum charge rate in amps."""
+        try:
+            value = float(value)
+        except (ValueError, TypeError):
+            _LOGGER.error(f"Invalid value provided for charge rate: {value}")
+            return False
+
+        if value <= 0:
+            _LOGGER.error(f"Charge rate must be greater than 0: {value}")
+            return False
+
         if cp_id in self.charge_points:
+            _LOGGER.info(f"Setting charge rate to {value} amps for charger {cp_id}.")
             return await self.charge_points[cp_id].set_charge_rate(limit_amps=value)
+
+        _LOGGER.error(f"Charge point {cp_id} not found.")
         return False
 
-    async def set_charger_state(
-        self, cp_id: str, service_name: str, state: bool = True
-    ):
+    async def set_charger_state(self, cp_id: str, service_name: str, state: bool = True):
         """Carry out requested service/state change on connected charger."""
-        resp = False
-        if cp_id in self.charge_points:
-            if service_name == csvcs.service_availability.name:
-                resp = await self.charge_points[cp_id].set_availability(state)
-            if service_name == csvcs.service_charge_start.name:
-                resp = await self.charge_points[cp_id].start_transaction()
-            if service_name == csvcs.service_charge_stop.name:
-                resp = await self.charge_points[cp_id].stop_transaction()
-            if service_name == csvcs.service_reset.name:
-                resp = await self.charge_points[cp_id].reset()
-            if service_name == csvcs.service_unlock.name:
-                resp = await self.charge_points[cp_id].unlock()
-        return resp
+        valid_services = {
+            csvcs.service_availability.name,
+            csvcs.service_charge_start.name,
+            csvcs.service_charge_stop.name,
+            csvcs.service_reset.name,
+            csvcs.service_unlock.name,
+        }
+        if service_name not in valid_services:
+            _LOGGER.error(f"Invalid service name provided: {service_name}")
+            return False
+
+        if cp_id not in self.charge_points:
+            _LOGGER.error(f"Charge point {cp_id} not found for service {service_name}.")
+            return False
+
+        charge_point = self.charge_points[cp_id]
+        if service_name == csvcs.service_availability.name:
+            return await charge_point.set_availability(state)
+        if service_name == csvcs.service_charge_start.name:
+            return await charge_point.start_transaction()
+        if service_name == csvcs.service_charge_stop.name:
+            return await charge_point.stop_transaction()
+        if service_name == csvcs.service_reset.name:
+            return await charge_point.reset()
+        if service_name == csvcs.service_unlock.name:
+            return await charge_point.unlock()
+
+        return False
 
     def device_info(self):
         """Return device information."""
